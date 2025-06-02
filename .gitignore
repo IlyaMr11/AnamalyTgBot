@@ -1,5 +1,4 @@
 # Файлы окружения
-.env
 .env.*
 
 # Базы данных
@@ -32,3 +31,4 @@ cache/
 Thumbs.db# created by virtualenv automatically
 
 .venv
+.env
