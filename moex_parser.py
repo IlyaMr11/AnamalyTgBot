@@ -10,7 +10,6 @@ class MOEXParser:
         self.timeout = timeout
 
     def get_current_price(self, ticker: str):
-        """Получение текущей цены для одного тикера (синхронно, только для площадки TQBR)"""
         url = f"{self.BASE_URL}/{ticker}.json"
         params = {"interval": 1}
         try:
@@ -21,7 +20,6 @@ class MOEXParser:
                     print(f"Тикер {ticker} не найден или нет данных.")
                     return None
                 columns = data["marketdata"]["columns"]
-                # Ищем строку с BOARDID == 'TQBR'
                 for row in data["marketdata"]["data"]:
                     row_dict = dict(zip(columns, row))
                     if row_dict.get("BOARDID") == "TQBR":
@@ -35,7 +33,6 @@ class MOEXParser:
             return None
 
     def get_historical_prices(self, ticker: str, interval=None, count=None):
-        """Получение последних count свечей (дата, цена закрытия) за 1 день"""
         till = datetime.now()
         interval = interval if interval is not None else Parameters.MOEX_INTERVAL_MINUTES
         count = count if count is not None else Parameters.MOEX_CANDLES_LIMIT
@@ -65,7 +62,6 @@ class MOEXParser:
                     close = row[close_idx]
                     begin = row[begin_idx]
                     if close is not None and begin is not None:
-                        # begin формат: '2024-05-24 10:00:00'
                         dt = datetime.strptime(begin, '%Y-%m-%d %H:%M:%S')
                         result.append((dt, close))
                 return result

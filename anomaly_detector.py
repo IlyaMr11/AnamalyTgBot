@@ -11,29 +11,23 @@ class AnomalyDetector:
         self.logger = logging.getLogger(__name__)
 
     def init_ticker(self, ticker: str):
-        """Инициализация истории для нового тикера"""
         if ticker not in self.price_history:
             self.price_history[ticker] = deque(maxlen=self.window_size)
 
     def update_price(self, ticker: str, price: float):
-        """Обновление истории цен"""
         self.init_ticker(ticker)
         self.price_history[ticker].append(price)
 
     def calculate_sma(self, ticker: str):
-        """Расчёт скользящего среднего"""
         history = self.price_history[ticker]
         if len(history) < self.window_size:
             return None
-
         return sum(history) / len(history)
 
     def check_sma_anomaly(self, ticker: str, current_price: float):
-        """Проверка аномалии SMA"""
         sma = self.calculate_sma(ticker)
         if sma is None:
             return None
-
         deviation = abs(current_price - sma) / sma * 100
         if deviation >= self.price_change_threshold:
             return {
@@ -46,7 +40,6 @@ class AnomalyDetector:
         return None
 
     def check_level_anomaly(self, current_price: float, support: float, resistance: float):
-        """Проверка пробоя уровней"""
         if resistance is not None and current_price > resistance:
             return {
                 "type": "resistance_break",
@@ -54,7 +47,6 @@ class AnomalyDetector:
                 "level": resistance,
                 "level_type": "resistance"
             }
-
         if support is not None and current_price < support:
             return {
                 "type": "support_break",
@@ -62,11 +54,9 @@ class AnomalyDetector:
                 "level": support,
                 "level_type": "support"
             }
-
         return None
 
     def init_ticker_ema(self, ticker: str, ema_windows=(20, 50, 100)):
-        """Инициализация истории для EMA по разным окнам"""
         if not hasattr(self, 'ema_history'):
             self.ema_history = {}
         if ticker not in self.ema_history:
@@ -75,16 +65,13 @@ class AnomalyDetector:
                 self.ema_history[ticker][window] = []
 
     def update_ema_history(self, ticker: str, price: float, ema_windows=(20, 50, 100)):
-        """Обновление истории цен для EMA"""
         self.init_ticker_ema(ticker, ema_windows)
         for window in ema_windows:
             self.ema_history[ticker][window].append(price)
-            # Ограничим размер истории для экономии памяти
             if len(self.ema_history[ticker][window]) > window * 3:
                 self.ema_history[ticker][window] = self.ema_history[ticker][window][-window*3:]
 
     def calculate_ema(self, ticker: str, window: int):
-        """Расчёт EMA для тикера и окна"""
         if not hasattr(self, 'ema_history') or ticker not in self.ema_history or window not in self.ema_history[ticker]:
             return None
         prices = self.ema_history[ticker][window]
@@ -97,13 +84,11 @@ class AnomalyDetector:
         return ema
 
     def check_ema_anomaly(self, ticker: str, current_price: float, ema_windows=(20, 50, 100)):
-        """Проверка аномалий по EMA (пересечение)"""
         anomalies = []
         for window in ema_windows:
             ema = self.calculate_ema(ticker, window)
             if ema is None:
                 continue
-            # Пересечение: цена была ниже EMA, стала выше, или наоборот
             prices = self.ema_history[ticker][window]
             if len(prices) < 2:
                 continue
@@ -120,24 +105,16 @@ class AnomalyDetector:
         return anomalies
 
     def detect_anomalies(self, ticker: str, current_price: float, support=None, resistance=None, ema_windows=(20, 50, 100)):
-        """Обнаружение всех типов аномалий (SMA, уровни, EMA-cross)"""
         anomalies = []
         self.update_price(ticker, current_price)
         self.update_ema_history(ticker, current_price, ema_windows)
-
-        # Проверка SMA аномалии
         sma_anomaly = self.check_sma_anomaly(ticker, current_price)
         if sma_anomaly:
             anomalies.append(sma_anomaly)
-
-        # Проверка пробоя уровней
         level_anomaly = self.check_level_anomaly(current_price, support, resistance)
         if level_anomaly:
             level_anomaly["ticker"] = ticker
             anomalies.append(level_anomaly)
-
-        # Проверка EMA-cross аномалий
         ema_anomalies = self.check_ema_anomaly(ticker, current_price, ema_windows)
         anomalies.extend(ema_anomalies)
-
         return anomalies
