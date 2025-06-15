@@ -45,12 +45,12 @@ conda install pandas numpy matplotlib requests python-dateutil pytz lxml
 ```bash
 pip install -r requirements.txt
 ```
-> **Важно:**  
-> Для поддержки JobQueue в python-telegram-bot обязательно используйте pip и убедитесь, что установлен пакет `python-telegram-bot[job-queue]`.  
-> Если потребуется, выполните:
-> ```bash
-> pip install "python-telegram-bot[job-queue]"
-> ```
+ **Важно:**  
+ Для поддержки JobQueue в python-telegram-bot обязательно используйте pip и убедитесь, что установлен пакет `python-telegram-bot[job-queue]`.  
+ Если потребуется, выполните:
+ ```bash
+ pip install "python-telegram-bot[job-queue]"
+ ```
 
 ---
 
@@ -84,26 +84,6 @@ __pycache__/
 python tgBot.py
 ```
 
----
-
-## Структура проекта
-
-```
-AnamalyTgBot/
-├── tgBot.py
-├── moex_parser.py
-├── anomaly_detector.py
-├── ChartDrawer.py
-├── config.py
-├── parameters.py
-├── requirements.txt
-├── .env
-├── .gitignore
-└── (tickers.csv, anomalies.csv)  # создаются автоматически, не коммитить!
-```
-
----
-
 ## Важно
 
 - **tickers.csv** и **anomalies.csv** создаются автоматически при первом запуске.  
@@ -111,20 +91,4 @@ AnamalyTgBot/
 - Все основные параметры вынесены в файл `parameters.py` для удобства настройки.
 - Для корректной работы JobQueue используйте pip-установку python-telegram-bot с опцией `[job-queue]`.
 
----
 
-## Пример requirements.txt
-
-```
-python-telegram-bot==20.3
-python-dotenv==1.0.0
-pandas==2.0.3
-numpy==1.24.3
-aiohttp==3.8.4
-requests==2.31.0
-beautifulsoup4==4.12.0
-lxml==4.9.3
-sqlalchemy==2.0.15
-python-dateutil==2.8.2
-pytz==2023.3
-```

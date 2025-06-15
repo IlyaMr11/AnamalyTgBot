@@ -18,27 +18,6 @@ class AnomalyDetector:
         self.init_ticker(ticker)
         self.price_history[ticker].append(price)
 
-    def calculate_sma(self, ticker: str):
-        history = self.price_history[ticker]
-        if len(history) < self.window_size:
-            return None
-        return sum(history) / len(history)
-
-    def check_sma_anomaly(self, ticker: str, current_price: float):
-        sma = self.calculate_sma(ticker)
-        if sma is None:
-            return None
-        deviation = abs(current_price - sma) / sma * 100
-        if deviation >= self.price_change_threshold:
-            return {
-                "type": "sma_deviation",
-                "ticker": ticker,
-                "deviation": deviation,
-                "current_price": current_price,
-                "sma": sma
-            }
-        return None
-
     def check_level_anomaly(self, current_price: float, support: float, resistance: float):
         if resistance is not None and current_price > resistance:
             return {

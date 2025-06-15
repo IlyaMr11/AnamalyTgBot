@@ -111,7 +111,6 @@ async def ticker_actions_new_handler(update: Update, context: ContextTypes.DEFAU
 # Добавление уровня
 async def add_level_new_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ticker = context.user_data.get('new_ticker')
-    user = update.effective_user
     try:
         level = float(update.message.text.replace(',', '.'))
     except ValueError:
@@ -122,13 +121,11 @@ async def add_level_new_handler(update: Update, context: ContextTypes.DEFAULT_TY
         context.user_data['new_levels'] = []
     context.user_data['new_levels'].append(level)
     await update.message.reply_text(f'Уровень {level} добавлен для {ticker}!')
-    # Не отправляем клавиатуру с действиями, чтобы не скрывалась кнопка "Сохранить тикер"
     return 'TICKER_ACTIONS_NEW'
 
 # Добавление EMA
 async def add_ema_new_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ticker = context.user_data.get('new_ticker')
-    user = update.effective_user
     try:
         ema = int(update.message.text.strip())
         if ema not in [20, 50, 100]:
@@ -141,7 +138,6 @@ async def add_ema_new_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         context.user_data['new_emas'] = []
     context.user_data['new_emas'].append(ema)
     await update.message.reply_text(f'EMA {ema} добавлена для {ticker}!')
-    # Не отправляем клавиатуру с действиями, чтобы не скрывалась кнопка "Сохранить тикер"
     return 'TICKER_ACTIONS_NEW'
 
 # Просмотр тикеров пользователя
