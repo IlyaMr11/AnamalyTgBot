@@ -17,7 +17,7 @@ https://www.anaconda.com/products/distribution
 ### 2. Клонируйте репозиторий
 
 ```bash
-git clone https://github.com/yourusername/AnamalyTgBot.git
+git clone https://github.com/IlyaMr11/AnamalyTgBot.git
 cd AnamalyTgBot
 ```
 
