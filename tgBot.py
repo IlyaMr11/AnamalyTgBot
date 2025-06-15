@@ -9,9 +9,12 @@ import matplotlib.pyplot as plt
 import io
 import numpy as np
 from ChartDrawer import ChartDrawer
+import csv
+from datetime import datetime
+from parameters import Parameters
 
 # Пути к CSV-файлам
-TICKERS_CSV = 'tickers.csv'
+TICKERS_CSV = Parameters.TICKERS_CSV
 
 # Состояния для ConversationHandler
 ADD_TICKER, CHOOSE_EMA = range(2)
@@ -25,8 +28,12 @@ def ensure_tickers_csv():
 def add_ticker_to_csv(username, user_id, ticker, ema_list, level=None):
     ensure_tickers_csv()
     df = pd.read_csv(TICKERS_CSV)
-    for ema in ema_list:
-        df = pd.concat([df, pd.DataFrame([{'username': username, 'user_id': user_id, 'ticker': ticker, 'ema': ema, 'level': level}])], ignore_index=True)
+    if ema_list:
+        for ema in ema_list:
+            df = pd.concat([df, pd.DataFrame([{'username': username, 'user_id': user_id, 'ticker': ticker, 'ema': ema, 'level': level}])], ignore_index=True)
+    elif level is not None:
+        # Добавляем строку только с уровнем, если ema_list пустой
+        df = pd.concat([df, pd.DataFrame([{'username': username, 'user_id': user_id, 'ticker': ticker, 'ema': None, 'level': level}])], ignore_index=True)
     df.to_csv(TICKERS_CSV, index=False)
 
 def user_tickers(user_id):
@@ -36,106 +43,109 @@ def user_tickers(user_id):
 
 # --- Telegram Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [['Добавить тикер', 'Мои тикеры'], ['История аномалий']]
+    keyboard = Parameters.MAIN_MENU_BUTTONS
     await update.message.reply_text(
         'Привет! Выберите действие:',
         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     )
 
 async def add_ticker_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text('Введите тикер (например, SBER):')
+    context.user_data.clear()  # очищаем все временные данные при старте добавления тикера
+    keyboard = [['Назад']]
+    await update.message.reply_text('Введите тикер (например, SBER):', reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
     return ADD_TICKER
 
 async def add_ticker_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ticker = update.message.text.strip().upper()
+    if ticker == 'НАЗАД':
+        keyboard = Parameters.MAIN_MENU_BUTTONS
+        context.user_data.clear()
+        await update.message.reply_text('Вы вернулись в главное меню.', reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
+        return ConversationHandler.END
     parser = MOEXParser()
     price = parser.get_current_price(ticker)
     if price is None:
         await update.message.reply_text('Тикер не найден. Попробуйте снова:')
         return ADD_TICKER
     context.user_data['new_ticker'] = ticker
+    keyboard = [['Добавить уровень', 'Добавить EMA'], ['Сохранить тикер', 'Назад']]
     await update.message.reply_text(
-        'Выберите EMA для отслеживания (можно несколько, через запятую):\n20, 50, 100',
-    )
-    return CHOOSE_EMA
-
-async def add_ticker_choose_ema(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ema_text = update.message.text.replace(' ', '')
-    ema_list = [int(e) for e in ema_text.split(',') if e in ['20', '50', '100']]
-    if not ema_list:
-        await update.message.reply_text('Некорректный выбор EMA. Введите числа через запятую (например: 20,50):')
-        return CHOOSE_EMA
-    ticker = context.user_data['new_ticker']
-    user = update.effective_user
-    context.user_data['new_ema'] = ema_list
-    # Не сохраняем тикер сразу, а предлагаем меню действий
-    keyboard = [['Добавить уровень', 'Добавить EMA'], ['Сохранить тикер']]
-    await update.message.reply_text(
-        f'Тикер {ticker} выбран с EMA: {", ".join(map(str, ema_list))}!\nЧто сделать дальше?',
+        f'Тикер {ticker} найден! Что сделать дальше?',
         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     )
-    return 'TICKER_ACTIONS'
+    return 'TICKER_ACTIONS_NEW'
 
-# --- Обработчики для меню после выбора EMA ---
-async def ticker_actions_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# --- Новое меню действий после ввода тикера ---
+async def ticker_actions_new_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
+    ticker = context.user_data.get('new_ticker')
+    user = update.effective_user
     if text == 'Добавить уровень':
         await update.message.reply_text('Введите уровень (например, 150.0):')
-        return 'ADD_LEVEL'
+        return 'ADD_LEVEL_NEW'
     elif text == 'Добавить EMA':
-        await update.message.reply_text('Введите дополнительные EMA (20, 50, 100) через запятую:')
-        return 'ADD_EMA'
+        await update.message.reply_text('Введите EMA (20, 50, 100):')
+        return 'ADD_EMA_NEW'
     elif text == 'Сохранить тикер':
-        ticker = context.user_data.get('new_ticker')
-        ema_list = context.user_data.get('new_ema', [])
-        level = context.user_data.get('new_level', None)
-        user = update.effective_user
-        add_ticker_to_csv(user.username, user.id, ticker, ema_list, level)
-        # Инициализация истории EMA (скачиваем исторические цены)
-        parser = MOEXParser()
-        closes = parser.get_historical_prices(ticker, interval=1, count=max(ema_list)*3)
-        detector = AnomalyDetector()
-        for price in closes:
-            detector.update_ema_history(ticker, price, ema_list)
-        await update.message.reply_text(f'Тикер {ticker} сохранён с EMA: {", ".join(map(str, ema_list))} и уровнем: {level if level else "не задан"}!')
-        # Возврат в главное меню
-        keyboard = [['Добавить тикер', 'Мои тикеры'], ['История аномалий']]
-        await update.message.reply_text(
-            'Вы вернулись в главное меню.',
-            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        )
+        levels = context.user_data.get('new_levels', [])
+        emas = context.user_data.get('new_emas', [])
+        if not levels and not emas:
+            await update.message.reply_text('Добавьте хотя бы один уровень или EMA перед сохранением тикера.')
+            return 'TICKER_ACTIONS_NEW'
+        # Сохраняем все уровни и EMA
+        for level in levels:
+            add_ticker_to_csv(user.username, user.id, ticker, ema_list=[], level=level)
+        for ema in emas:
+            add_ticker_to_csv(user.username, user.id, ticker, ema_list=[ema], level=None)
+        await update.message.reply_text(f'Тикер {ticker} сохранён!')
+        keyboard = Parameters.MAIN_MENU_BUTTONS
+        context.user_data.clear()
+        await update.message.reply_text('Вы вернулись в главное меню.', reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
+        return ConversationHandler.END
+    elif text == 'Назад':
+        keyboard = Parameters.MAIN_MENU_BUTTONS
+        context.user_data.clear()
+        await update.message.reply_text('Вы вернулись в главное меню.', reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
         return ConversationHandler.END
     else:
         await update.message.reply_text('Пожалуйста, выберите действие из меню.')
-        return 'TICKER_ACTIONS'
+        return 'TICKER_ACTIONS_NEW'
 
-async def add_level_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# --- Добавление уровня ---
+async def add_level_new_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ticker = context.user_data.get('new_ticker')
+    user = update.effective_user
     try:
         level = float(update.message.text.replace(',', '.'))
-        context.user_data['new_level'] = level
-        await update.message.reply_text(f'Уровень {level} добавлен! Теперь выберите дальнейшее действие.',
-            reply_markup=ReplyKeyboardMarkup([
-                ['Добавить уровень', 'Добавить EMA'], ['Сохранить тикер']
-            ], resize_keyboard=True))
-        return 'TICKER_ACTIONS'
     except ValueError:
         await update.message.reply_text('Некорректный формат уровня. Введите число, например: 150.0')
-        return 'ADD_LEVEL'
+        return 'ADD_LEVEL_NEW'
+    # Сохраняем уровень во временный список
+    if 'new_levels' not in context.user_data:
+        context.user_data['new_levels'] = []
+    context.user_data['new_levels'].append(level)
+    await update.message.reply_text(f'Уровень {level} добавлен для {ticker}!')
+    # Не отправляем клавиатуру с действиями, чтобы не скрывалась кнопка "Сохранить тикер"
+    return 'TICKER_ACTIONS_NEW'
 
-async def add_ema_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ema_text = update.message.text.replace(' ', '')
-    ema_list = [int(e) for e in ema_text.split(',') if e in ['20', '50', '100']]
-    if not ema_list:
-        await update.message.reply_text('Некорректный выбор EMA. Введите числа через запятую (например: 20,50):')
-        return 'ADD_EMA'
-    if 'new_ema' not in context.user_data:
-        context.user_data['new_ema'] = []
-    context.user_data['new_ema'].extend([e for e in ema_list if e not in context.user_data['new_ema']])
-    await update.message.reply_text(f'EMA {", ".join(map(str, ema_list))} добавлены! Теперь выберите дальнейшее действие.',
-        reply_markup=ReplyKeyboardMarkup([
-            ['Добавить уровень', 'Добавить EMA'], ['Сохранить тикер']
-        ], resize_keyboard=True))
-    return 'TICKER_ACTIONS'
+# --- Добавление EMA ---
+async def add_ema_new_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ticker = context.user_data.get('new_ticker')
+    user = update.effective_user
+    try:
+        ema = int(update.message.text.strip())
+        if ema not in [20, 50, 100]:
+            raise ValueError
+    except ValueError:
+        await update.message.reply_text('Некорректный выбор EMA. Введите 20, 50 или 100:')
+        return 'ADD_EMA_NEW'
+    # Сохраняем EMA во временный список
+    if 'new_emas' not in context.user_data:
+        context.user_data['new_emas'] = []
+    context.user_data['new_emas'].append(ema)
+    await update.message.reply_text(f'EMA {ema} добавлена для {ticker}!')
+    # Не отправляем клавиатуру с действиями, чтобы не скрывалась кнопка "Сохранить тикер"
+    return 'TICKER_ACTIONS_NEW'
 
 # --- Просмотр тикеров пользователя ---
 async def my_tickers_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -144,29 +154,40 @@ async def my_tickers_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if df.empty:
         await update.message.reply_text('У вас пока нет добавленных тикеров.')
         # Возврат в главное меню
-        keyboard = [['Добавить тикер', 'Мои тикеры'], ['История аномалий']]
+        keyboard = Parameters.MAIN_MENU_BUTTONS
+        context.user_data.clear()  # очищаем временные данные
         await update.message.reply_text('Вы вернулись в главное меню.', reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
         return ConversationHandler.END
-    # Группируем по тикеру, собираем EMA и уровень
+    # Группируем по тикеру, собираем все EMA и уровни
     msg = 'Ваши тикеры:\n'
     tickers = []
     for ticker, group in df.groupby('ticker'):
-        emas = ', '.join(str(int(e)) for e in group['ema'].unique())
-        level = group['level'].dropna().unique()
-        level_str = str(level[0]) if len(level) > 0 else 'не задан'
-        msg += f'• {ticker}: EMA {emas}, уровень: {level_str}\n'
+        emas = ', '.join(str(int(e)) for e in group['ema'].dropna().unique() if str(e) != '' and not pd.isna(e))
+        levels = ', '.join(str(l) for l in group['level'].dropna().unique() if str(l) != '' and not pd.isna(l))
+        msg += f'• {ticker}:'
+        if emas:
+            msg += f' EMA {emas}'
+        if levels:
+            msg += f' уровни: {levels}'
+        msg += '\n'
         tickers.append(ticker)
     await update.message.reply_text(msg)
-    await update.message.reply_text('Введите тикер из списка, чтобы открыть меню управления этим тикером:')
+    keyboard = [['Назад']]
+    await update.message.reply_text('Введите тикер из списка, чтобы открыть меню управления этим тикером:', reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
     context.user_data['my_tickers_list'] = tickers
     return 'TICKER_MENU_SELECT'
 
 # --- Меню тикера ---
 async def ticker_menu_select_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ticker = update.message.text.strip().upper()
+    if ticker == 'НАЗАД':
+        keyboard = Parameters.MAIN_MENU_BUTTONS
+        context.user_data.clear()  # очищаем временные данные
+        await update.message.reply_text('Вы вернулись в главное меню.', reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
+        return ConversationHandler.END
     tickers = context.user_data.get('my_tickers_list', [])
     if ticker not in tickers:
-        await update.message.reply_text('Такого тикера нет в вашем списке. Введите тикер из таблицы:')
+        await update.message.reply_text('Такого тикера нет в вашем списке. Введите тикер из таблицы или нажмите Назад:')
         return 'TICKER_MENU_SELECT'
     context.user_data['selected_ticker'] = ticker
     keyboard = [['График', 'Редактировать тикер'], ['Назад']]
@@ -192,6 +213,8 @@ async def ticker_menu_actions_handler(update: Update, context: ContextTypes.DEFA
         if not data:
             await update.message.reply_text('Нет исторических данных для построения графика.')
             return 'TICKER_MENU_ACTIONS'
+        # Оставляем только последние 100 точек
+        data = data[-100:]
         dates, closes = zip(*data)
         closes = [c for c in closes if c is not None]
         dates = [d for i, d in enumerate(dates) if closes[i] is not None]
@@ -216,7 +239,8 @@ async def ticker_menu_actions_handler(update: Update, context: ContextTypes.DEFA
         await update.message.reply_text('Что вы хотите отредактировать?', reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
         return 'TICKER_EDIT_MENU'
     elif text == 'Назад':
-        keyboard = [['Добавить тикер', 'Мои тикеры'], ['История аномалий']]
+        keyboard = Parameters.MAIN_MENU_BUTTONS
+        context.user_data.clear()  # очищаем временные данные
         await update.message.reply_text('Вы вернулись в главное меню.', reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
         return ConversationHandler.END
     else:
@@ -228,11 +252,11 @@ async def ticker_edit_menu_handler(update: Update, context: ContextTypes.DEFAULT
     text = update.message.text
     ticker = context.user_data.get('selected_ticker')
     if text == 'Удалить EMA':
-        await update.message.reply_text(f'[Заглушка] Здесь будет удаление EMA для {ticker}.')
-        return 'TICKER_EDIT_MENU'
+        await update.message.reply_text('Введите EMA, которую хотите удалить (20, 50 или 100):')
+        return 'DELETE_EMA'
     elif text == 'Удалить уровень':
-        await update.message.reply_text(f'[Заглушка] Здесь будет удаление уровня для {ticker}.')
-        return 'TICKER_EDIT_MENU'
+        await update.message.reply_text('Введите уровень, который хотите удалить (точное значение):')
+        return 'DELETE_LEVEL'
     elif text == 'Назад':
         keyboard = [['График', 'Редактировать тикер'], ['Назад']]
         await update.message.reply_text(f'Меню тикера {ticker}:', reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
@@ -241,28 +265,222 @@ async def ticker_edit_menu_handler(update: Update, context: ContextTypes.DEFAULT
         await update.message.reply_text('Пожалуйста, выберите действие из меню.')
         return 'TICKER_EDIT_MENU'
 
+# --- Удаление EMA ---
+async def delete_ema_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    ticker = context.user_data.get('selected_ticker')
+    try:
+        ema_to_delete = int(update.message.text.strip())
+        if ema_to_delete not in [20, 50, 100]:
+            raise ValueError
+    except ValueError:
+        await update.message.reply_text('Введите корректное значение EMA (20, 50 или 100):')
+        return 'DELETE_EMA'
+    # Удаляем EMA из tickers.csv
+    df = pd.read_csv(TICKERS_CSV)
+    before = len(df)
+    df = df[~((df['user_id'] == user.id) & (df['ticker'] == ticker) & (df['ema'] == ema_to_delete))]
+    after = len(df)
+    df.to_csv(TICKERS_CSV, index=False)
+    if before == after:
+        await update.message.reply_text(f'EMA {ema_to_delete} не найдена для {ticker}.')
+    else:
+        # Проверяем, остались ли ещё записи по этому тикеру для пользователя
+        df_check = df[(df['user_id'] == user.id) & (df['ticker'] == ticker)]
+        if df_check.empty:
+            await update.message.reply_text(f'Тикер {ticker} больше не отслеживается.')
+            keyboard = Parameters.MAIN_MENU_BUTTONS
+            context.user_data.clear()  # очищаем временные данные
+            await update.message.reply_text('Вы вернулись в главное меню.', reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
+            return ConversationHandler.END
+        else:
+            await update.message.reply_text(f'EMA {ema_to_delete} удалена для {ticker}.')
+    keyboard = [['Удалить EMA', 'Удалить уровень'], ['Назад']]
+    await update.message.reply_text('Что вы хотите отредактировать?', reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
+    return 'TICKER_EDIT_MENU'
+
+# --- Удаление уровня ---
+async def delete_level_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    ticker = context.user_data.get('selected_ticker')
+    try:
+        level_to_delete = float(update.message.text.strip().replace(',', '.'))
+    except ValueError:
+        await update.message.reply_text('Введите корректное значение уровня (например, 320.0):')
+        return 'DELETE_LEVEL'
+    df = pd.read_csv(TICKERS_CSV)
+    mask = (df['user_id'] == user.id) & (df['ticker'] == ticker) & (df['level'] == level_to_delete)
+    if not mask.any():
+        await update.message.reply_text(f'Уровень {level_to_delete} не найден для {ticker}.')
+    else:
+        df.loc[mask, 'level'] = float('nan')
+        df.to_csv(TICKERS_CSV, index=False)
+        await update.message.reply_text(f'Уровень {level_to_delete} удалён для {ticker}.')
+    keyboard = [['Удалить EMA', 'Удалить уровень'], ['Назад']]
+    await update.message.reply_text('Что вы хотите отредактировать?', reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
+    return 'TICKER_EDIT_MENU'
+
+# --- Новый обработчик для кнопки 'История аномалий' ---
+async def history_anomalies_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    anomalies_file = Parameters.ANOMALIES_CSV
+    if not os.path.exists(anomalies_file):
+        await update.message.reply_text('У вас пока нет истории аномалий.')
+        return
+    df = pd.read_csv(anomalies_file)
+    user_anomalies = df[df['user_id'] == user.id]
+    if user_anomalies.empty:
+        await update.message.reply_text('У вас пока нет истории аномалий.')
+        return
+    # --- Формируем шапку таблицы ---
+    msg = 'Тикер | Дата | Тип аномалии | Цена | Уровень/EMA\n'
+    msg += '-'*55 + '\n'
+    for _, row in user_anomalies.iterrows():
+        anomaly_type = row['anomaly_type']
+        if anomaly_type == 'support_break':
+            anomaly_type_str = 'Пробитие поддержки'
+        elif anomaly_type == 'resistance_break':
+            anomaly_type_str = 'Пробитие сопротивления'
+        elif anomaly_type == 'ema_cross':
+            anomaly_type_str = f"Пересечение EMA {row['ema_window']}"
+        else:
+            anomaly_type_str = anomaly_type
+        level_or_ema = row['level'] if pd.notna(row['level']) and row['level'] != '' else row['ema']
+        msg += f"{row['ticker']} | {row['date']} | {anomaly_type_str} | {row['price']} | {level_or_ema}\n"
+    await update.message.reply_text(msg)
+
+async def add_ticker_back_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = Parameters.MAIN_MENU_BUTTONS
+    context.user_data.clear()
+    await update.message.reply_text('Вы вернулись в главное меню.', reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
+    return ConversationHandler.END
+
+# --- Проверка аномалий и отправка сообщений ---
+async def check_anomalies_job(context: ContextTypes.DEFAULT_TYPE):
+    parser = MOEXParser()
+    detector = AnomalyDetector()
+    ensure_tickers_csv()
+    if not os.path.exists(TICKERS_CSV):
+        return
+    df = pd.read_csv(TICKERS_CSV)
+    if df.empty:
+        return
+    users = df['user_id'].unique()
+    for user_id in users:
+        user_df = df[df['user_id'] == user_id]
+        username = user_df['username'].iloc[0] if 'username' in user_df.columns else ''
+        for ticker in user_df['ticker'].unique():
+            ticker_df = user_df[user_df['ticker'] == ticker]
+            emas = [int(e) for e in ticker_df['ema'].dropna().unique() if str(e) != '' and not pd.isna(e)]
+            levels = [float(l) for l in ticker_df['level'].dropna().unique() if str(l) != '' and not pd.isna(l)]
+            # Для простоты: поддерживаем только один уровень как resistance и один как support (можно расширить)
+            support = min(levels) if levels else None
+            resistance = max(levels) if levels else None
+            price = parser.get_current_price(ticker)
+            if price is None:
+                continue
+            # Обновляем историю для EMA
+            detector.update_ema_history(ticker, price, ema_windows=emas)
+            # Проверка аномалий по уровням
+            level_anomaly = detector.check_level_anomaly(price, support, resistance)
+            anomalies = []
+            if level_anomaly:
+                level_anomaly['ticker'] = ticker
+                anomalies.append(level_anomaly)
+            # Проверка аномалий по EMA
+            ema_anomalies = detector.check_ema_anomaly(ticker, price, ema_windows=emas)
+            anomalies.extend(ema_anomalies)
+            # Отправка сообщений и запись в CSV
+            for anomaly in anomalies:
+                now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                # Формируем информативное сообщение
+                if anomaly['type'] in ('support_break', 'resistance_break'):
+                    level_type = 'поддержки' if anomaly.get('level_type') == 'support' else 'сопротивления'
+                    msg = (f"Тикер: {ticker}\n"
+                           f"Дата: {now}\n"
+                           f"Пробитие {level_type}\n"
+                           f"Цена: {anomaly.get('current_price', '')}\n"
+                           f"Уровень: {anomaly.get('level', '')}")
+                elif anomaly['type'] == 'ema_cross':
+                    msg = (f"Тикер: {ticker}\n"
+                           f"Дата: {now}\n"
+                           f"Пересечение EMA {anomaly.get('ema_window', '')}\n"
+                           f"Цена: {anomaly.get('current_price', '')}\n"
+                           f"EMA: {anomaly.get('ema', '')}")
+                else:
+                    msg = f"{ticker} {now} {anomaly['type']} {anomaly.get('current_price', '')}"
+                try:
+                    await context.bot.send_message(chat_id=int(user_id), text=msg)
+                except Exception as e:
+                    print(f"Ошибка отправки сообщения: {e}")
+                # Запись в anomalies.csv
+                row = {
+                    'user_id': user_id,
+                    'username': username,
+                    'ticker': ticker,
+                    'date': now,
+                    'anomaly_type': anomaly['type'],
+                    'price': anomaly.get('current_price', ''),
+                    'level': anomaly.get('level', ''),
+                    'level_type': anomaly.get('level_type', ''),
+                    'ema_window': anomaly.get('ema_window', ''),
+                    'ema': anomaly.get('ema', '')
+                }
+                file_exists = os.path.exists(anomalies_file)
+                with open(anomalies_file, 'a', newline='') as f:
+                    writer = csv.DictWriter(f, fieldnames=row.keys())
+                    if not file_exists:
+                        writer.writeheader()
+                    writer.writerow(row)
+                # --- Удаление уровня после срабатывания аномалии ---
+                if anomaly['type'] in ('support_break', 'resistance_break'):
+                    # Удаляем уровень из tickers.csv
+                    df = pd.read_csv(TICKERS_CSV)
+                    mask = (df['user_id'] == user_id) & (df['ticker'] == ticker) & (df['level'] == anomaly.get('level'))
+                    df = df[~mask]
+                    # Удаляем строки, где и ema, и level пустые (или NaN) для этого пользователя и тикера
+                    empty_mask = (
+                        (df['user_id'] == user_id) &
+                        (df['ticker'] == ticker) &
+                        ((df['ema'].isna() | (df['ema'] == '')) & (df['level'].isna() | (df['level'] == '')))
+                    )
+                    df = df[~empty_mask]
+                    # Если после удаления не осталось ни одной записи по тикеру для пользователя — удаляем тикер полностью
+                    user_ticker_df = df[(df['user_id'] == user_id) & (df['ticker'] == ticker)]
+                    if user_ticker_df.empty:
+                        df = df[~((df['user_id'] == user_id) & (df['ticker'] == ticker))]
+                    df.to_csv(TICKERS_CSV, index=False)
+
 # --- Основной запуск ---
 def main():
     application = Application.builder().token(Config.TELEGRAM_TOKEN).build()
     conv_handler = ConversationHandler(
         entry_points=[
             MessageHandler(filters.Regex('^Добавить тикер$'), add_ticker_start),
-            MessageHandler(filters.Regex('^Мои тикеры$'), my_tickers_handler)
+            MessageHandler(filters.Regex('^Мои тикеры$'), my_tickers_handler),
+            MessageHandler(filters.Regex('^История аномалий$'), history_anomalies_handler)
         ],
         states={
-            ADD_TICKER: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_ticker_receive)],
-            CHOOSE_EMA: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_ticker_choose_ema)],
-            'TICKER_ACTIONS': [MessageHandler(filters.TEXT & ~filters.COMMAND, ticker_actions_handler)],
-            'ADD_LEVEL': [MessageHandler(filters.TEXT & ~filters.COMMAND, add_level_handler)],
-            'ADD_EMA': [MessageHandler(filters.TEXT & ~filters.COMMAND, add_ema_handler)],
+            ADD_TICKER: [
+                MessageHandler(filters.Regex('^Назад$'), add_ticker_back_handler),
+                MessageHandler(filters.TEXT & ~filters.Regex('^(Мои тикеры|История аномалий|Добавить тикер)$'), add_ticker_receive)
+            ],
+            'TICKER_ACTIONS_NEW': [MessageHandler(filters.TEXT & ~filters.COMMAND, ticker_actions_new_handler)],
+            'ADD_LEVEL_NEW': [MessageHandler(filters.TEXT & ~filters.COMMAND, add_level_new_handler)],
+            'ADD_EMA_NEW': [MessageHandler(filters.TEXT & ~filters.COMMAND, add_ema_new_handler)],
             'TICKER_MENU_SELECT': [MessageHandler(filters.TEXT & ~filters.COMMAND, ticker_menu_select_handler)],
             'TICKER_MENU_ACTIONS': [MessageHandler(filters.TEXT & ~filters.COMMAND, ticker_menu_actions_handler)],
             'TICKER_EDIT_MENU': [MessageHandler(filters.TEXT & ~filters.COMMAND, ticker_edit_menu_handler)],
+            'DELETE_EMA': [MessageHandler(filters.TEXT & ~filters.COMMAND, delete_ema_handler)],
+            'DELETE_LEVEL': [MessageHandler(filters.TEXT & ~filters.COMMAND, delete_level_handler)],
         },
         fallbacks=[]
     )
     application.add_handler(CommandHandler('start', start))
     application.add_handler(conv_handler)
+    # --- Запуск периодической проверки аномалий ---
+    job_queue = application.job_queue
+    job_queue.run_repeating(check_anomalies_job, interval=Parameters.ANOMALY_CHECK_INTERVAL_SEC, first=10)  # каждые 3 минуты
     application.run_polling()
 
 if __name__ == "__main__":

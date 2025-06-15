@@ -1,39 +1,50 @@
 # moex_parser.py
 import requests
-from datetime import datetime
-import logging
+from datetime import datetime, timedelta
+from parameters import Parameters
 
 class MOEXParser:
     BASE_URL = "https://iss.moex.com/iss/engines/stock/markets/shares/securities"
 
     def __init__(self, timeout=10):
         self.timeout = timeout
-        self.logger = logging.getLogger(__name__)
 
     def get_current_price(self, ticker: str):
-        """Получение текущей цены для одного тикера (синхронно)"""
+        """Получение текущей цены для одного тикера (синхронно, только для площадки TQBR)"""
         url = f"{self.BASE_URL}/{ticker}.json"
         params = {"interval": 1}
         try:
             response = requests.get(url, params=params, timeout=self.timeout)
             if response.status_code == 200:
                 data = response.json()
-                market_data = dict(zip(
-                    data["marketdata"]["columns"],
-                    data["marketdata"]["data"][0]
-                ))
-                return market_data.get('LAST')
-            self.logger.error(f"Ошибка HTTP: {response.status_code}")
+                if not data["marketdata"]["data"]:
+                    print(f"Тикер {ticker} не найден или нет данных.")
+                    return None
+                columns = data["marketdata"]["columns"]
+                # Ищем строку с BOARDID == 'TQBR'
+                for row in data["marketdata"]["data"]:
+                    row_dict = dict(zip(columns, row))
+                    if row_dict.get("BOARDID") == "TQBR":
+                        return row_dict.get("LAST")
+                print(f"Тикер {ticker} не торгуется на TQBR или нет актуальных данных.")
+                return None
+            print(f"Ошибка HTTP: {response.status_code}")
             return None
         except Exception as e:
-            self.logger.error(f"Ошибка сети: {e}")
+            print(f"Ошибка сети: {e}")
             return None
 
-    def get_historical_prices(self, ticker: str, interval=60, count=100):
-        """Получение исторических данных (дата, цена закрытия) для расчёта EMA/SMA (синхронно)"""
+    def get_historical_prices(self, ticker: str, interval=None, count=None):
+        """Получение последних count свечей (дата, цена закрытия) за 1 день"""
+        till = datetime.now()
+        interval = interval if interval is not None else Parameters.MOEX_INTERVAL_MINUTES
+        count = count if count is not None else Parameters.MOEX_CANDLES_LIMIT
+        from_date = till - timedelta(hours=Parameters.MOEX_HISTORY_HOURS)
         url = f"https://iss.moex.com/iss/engines/stock/markets/shares/securities/{ticker}/candles.json"
         params = {
             "interval": interval,  # 1 - 1 минута, 10 - 10 минут, 60 - 1 час
+            "from": from_date.strftime('%Y-%m-%d'),
+            "till": till.strftime('%Y-%m-%d'),
             "limit": count
         }
         try:
@@ -58,8 +69,8 @@ class MOEXParser:
                         dt = datetime.strptime(begin, '%Y-%m-%d %H:%M:%S')
                         result.append((dt, close))
                 return result
-            self.logger.error(f"Ошибка HTTP: {response.status_code}")
+            print(f"Ошибка HTTP: {response.status_code}")
             return []
         except Exception as e:
-            self.logger.error(f"Ошибка сети: {e}")
+            print(f"Ошибка сети: {e}")
             return []
